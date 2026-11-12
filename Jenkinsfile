@@ -30,7 +30,7 @@ pipeline {
                 dir(env.FLUTTER_SOURCE) {
                     sh '''
                         set -eu
-                        flutter --version --machine | grep -Eq '"frameworkVersion":[[:space:]]*"3[.]50[.]0"'
+                        flutter --version --machine | grep -Eq '"frameworkVersion":[[:space:]]*"3[.]47[.]9"'
                         flutter pub get --enforce-lockfile
                         flutter build web --release --no-pub
                     '''
