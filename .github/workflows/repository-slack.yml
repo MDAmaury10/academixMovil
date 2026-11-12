@@ -1,0 +1,128 @@
+name: Avisos de GitHub en Slack
+
+on:
+  push:
+    branches: ['**']
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  workflow_run:
+    workflows: ['Academix Flutter Tests']
+    types: [completed]
+
+permissions:
+  actions: read
+
+jobs:
+  notify:
+    name: Enviar aviso a Slack
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Read event metadata and trusted API results only. Never check out PR code or load its artifacts.
+      - name: Publicar aviso en dev-github
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_DEV_GITHUB_WEBHOOK }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node <<'NODE'
+          (async () => {
+            const { readFileSync } = require('node:fs')
+            const { GITHUB_EVENT_NAME, GITHUB_EVENT_PATH, GITHUB_REPOSITORY,
+              GITHUB_SERVER_URL, GITHUB_API_URL, GITHUB_TOKEN, SLACK_WEBHOOK } = process.env
+
+            if (!SLACK_WEBHOOK) {
+              console.log('::warning::Falta el secreto SLACK_DEV_GITHUB_WEBHOOK.')
+              return
+            }
+            if (!/^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]+$/.test(SLACK_WEBHOOK)) {
+              throw new Error('El secreto de Slack debe ser una URL de Incoming Webhooks.')
+            }
+
+            const payload = JSON.parse(readFileSync(GITHUB_EVENT_PATH, 'utf8'))
+            const repoUrl = `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}`
+            const sender = payload.sender?.login
+            let title, details, url
+
+            switch (GITHUB_EVENT_NAME) {
+              case 'push': {
+                if (payload.deleted || !payload.ref.startsWith('refs/heads/')) return
+                const branch = payload.ref.slice('refs/heads/'.length)
+                const commits = payload.commits ?? []
+                title = `Push a ${branch}`
+                details = [
+                  sender && `Publicado por ${sender}`,
+                  ...commits.slice(0, 5).map(commit =>
+                    `${commit.id.slice(0, 7)} ${commit.message.split(/\r?\n/, 1)[0].slice(0, 160)}`),
+                  commits.length > 5 && `… y ${commits.length - 5} más`,
+                ].filter(Boolean)
+                const previous = payload.before
+                url = previous && !/^0+$/.test(previous)
+                  ? `${repoUrl}/compare/${previous}...${payload.after}`
+                  : `${repoUrl}/commit/${payload.after}`
+                break
+              }
+              case 'pull_request_target': {
+                const pr = payload.pull_request
+                const actions = {
+                  opened: 'abierto', reopened: 'reabierto', synchronize: 'actualizado',
+                  ready_for_review: 'listo para revisión', closed: pr.merged ? 'integrado' : 'cerrado',
+                }
+                title = `Pull request #${payload.number} ${actions[payload.action]}`
+                details = [pr.title, `${pr.head.ref} → ${pr.base.ref}`, sender && `Por ${sender}`].filter(Boolean)
+                url = `${repoUrl}/pull/${payload.number}`
+                break
+              }
+              case 'workflow_run': {
+                const run = payload.workflow_run
+                const response = await fetch(
+                  `${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`,
+                  {
+                    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${GITHUB_TOKEN}` },
+                    signal: AbortSignal.timeout(15000),
+                  },
+                )
+                if (!response.ok) throw new Error(`GitHub no devolvió el detalle de las pruebas (HTTP ${response.status}).`)
+                const { jobs } = await response.json()
+                const steps = jobs.find(job => job.name === 'Pruebas Flutter')?.steps ?? []
+                const flutter = steps.find(step => step.name === 'Ejecutar pruebas')?.conclusion
+                const monitor = steps.find(step => step.name === 'Probar el formato y filtrado de avisos')?.conclusion
+                const results = { success: 'aprobada', failure: 'fallida', timed_out: 'agotó el tiempo', cancelled: 'cancelada' }
+                if ([flutter, monitor].some(result => result === 'failure' || result === 'timed_out')) {
+                  title = 'Pruebas fallidas'
+                } else if (flutter === 'success' && monitor === 'success') {
+                  title = 'Pruebas aprobadas'
+                } else {
+                  title = 'Pruebas sin resultado completo'
+                }
+                details = [
+                  `Flutter: ${results[flutter] ?? 'sin ejecutar'} · Monitor de tarjetas: ${results[monitor] ?? 'sin ejecutar'}`,
+                  `Ejecución: ${results[run.conclusion] ?? run.conclusion} · ${run.head_branch ?? 'sin rama'} · #${run.run_number} · intento ${run.run_attempt}`,
+                ]
+                url = `${repoUrl}/actions/runs/${run.id}/attempts/${run.run_attempt}`
+                break
+              }
+              default:
+                return
+            }
+
+            const response = await fetch(SLACK_WEBHOOK, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              redirect: 'error',
+              signal: AbortSignal.timeout(15000),
+              body: JSON.stringify({
+                text: `Academix · ${title}`,
+                mrkdwn: false,
+                blocks: [
+                  { type: 'section', text: { type: 'plain_text', text: [`Academix · ${title}`, ...details].join('\n').slice(0, 2800) } },
+                  { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Abrir en GitHub' }, url }] },
+                ],
+              }),
+            })
+            if (!response.ok) throw new Error(`Slack rechazó el aviso (HTTP ${response.status}).`)
+            console.log('Aviso entregado a Slack.')
+          })().catch(error => {
+            console.error(error.message)
+            process.exitCode = 1
+          })
+          NODE
