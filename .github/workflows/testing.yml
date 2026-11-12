@@ -42,3 +42,12 @@ jobs:
         run: flutter test --no-pub --reporter expanded
       - name: Probar el formato y filtrado de avisos
         run: node --test ci/project-status.test.mjs
+      - name: Compilar Flutter Web
+        working-directory: ${{ steps.source.outputs.path }}
+        run: flutter build web --release --no-pub
+      - name: Publicar artefacto web
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: academix-web
+          path: ${{ steps.source.outputs.path }}/build/web/
+          if-no-files-found: error
