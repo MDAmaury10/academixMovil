@@ -1,0 +1,44 @@
+name: Academix Flutter Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FLUTTER_SUPPRESS_ANALYTICS: "true"
+  DART_SUPPRESS_ANALYTICS: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  flutter-tests:
+    name: Pruebas Flutter
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Obtener repositorio
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Obtener código Flutter
+        id: source
+        run: |
+          source_path="$(bash ci/flutter-source.sh)"
+          printf "path=%s\n" "$source_path" >> "$GITHUB_OUTPUT"
+      - name: Instalar Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: '3.47.9'
+      - name: Restaurar dependencias
+        working-directory: ${{ steps.source.outputs.path }}
+        run: flutter pub get --enforce-lockfile
+      - name: Ejecutar pruebas
+        working-directory: ${{ steps.source.outputs.path }}
+        run: flutter test --no-pub --reporter expanded
+      - name: Probar el formato y filtrado de avisos
+        run: node --test ci/project-status.test.mjs
