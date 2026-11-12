@@ -1,0 +1,49 @@
+name: Academix Project Status to Slack
+
+on:
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: academix-project-status
+  cancel-in-progress: false
+
+jobs:
+  project-status:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Obtener repositorio
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Restaurar punto de partida
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .project-notification-state
+          key: academix-project-status-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: academix-project-status-v1-
+      - name: Consultar movimientos y avisar a Slack
+        env:
+          PROJECTS_READ_TOKEN: ${{ secrets.PROJECTS_READ_TOKEN }}
+          SLACK_PROJECT_WEBHOOK: ${{ secrets.SLACK_PROJECT_WEBHOOK }}
+        run: |
+          if [[ -z "$PROJECTS_READ_TOKEN" || -z "$SLACK_PROJECT_WEBHOOK" ]]; then
+            echo "::warning::Configura PROJECTS_READ_TOKEN y SLACK_PROJECT_WEBHOOK para activar los avisos."
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+              exit 1
+            fi
+            exit 0
+          fi
+          node ci/project-status.mjs
+      - name: Guardar punto de partida y envíos completados
+        if: ${{ !cancelled() && hashFiles('.project-notification-state/state.json') != '' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .project-notification-state
+          key: academix-project-status-v1-${{ github.run_id }}-${{ github.run_attempt }}
